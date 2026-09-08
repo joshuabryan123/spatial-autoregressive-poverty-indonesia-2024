@@ -1,0 +1,643 @@
+---
+title: "**TUGAS KELOMPOK REGPAS**"
+author: "Kelompok6~P1"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown
+---
+
+| No | Nama             | NIM        |
+|:----|:------------------|:------------|
+| 1  | Fachry Wirayuda Alindri   | G1401231018 |
+| 2  | Muhammad Fadhil Hakim    | G1401231022 |
+| 3  | Luthfia Aiman Hanin   | G1401231064 |
+| 4  | Joshua Bryan Wijaya | G1401231082 |
+| 5  | Muhammad Bagas Ramadhan | G1401231109 |
+
+
+# **LIBRARY**
+
+```{r}
+suppressMessages(suppressWarnings({
+library(dplyr)
+library(readxl)
+library(sf)
+library(ggplot2)
+library(stringr)
+library(plotly)
+library(spatstat.geom)
+library(patchwork)
+library(spatstat)
+library(purrr)
+library(psych)
+library(spdep)
+library(spatialreg)
+library(sp)
+library(tmap)
+library(raster)
+library(lmtest)
+library(glmnet)
+library(car)
+library(lmtest)
+library(stargazer)
+library(olsrr)
+library(e1071)
+library(MASS)
+library(tidyverse)
+library(mgcv)
+library(fixest)
+library(robustbase)
+library(ggExtra)
+library(DescTools)
+library(nortest)
+}))
+```
+
+
+# **DATA**
+```{r}
+data <- read_xlsx("C:/JOSHUA BRYAN WIJAYA/SEMESTER 5/REGRESI SPASIAL/Tugas Akhir/data.xlsx")
+prov <- st_read("C:/JOSHUA BRYAN WIJAYA/SEMESTER 5/REGRESI SPASIAL/Studi Kasus/shp/Provinsi.shp")
+```
+
+```{r}
+View(prov)
+```
+
+```{r}
+str(data)
+dim(data)
+head(data)
+```
+
+```{r}
+data$`Kode` <- as.character(data$`Kode`)
+```
+
+# **EKSPLORASI DATA**
+```{r}
+regresi <- data.frame(
+  Kode = data$`Kode`,
+  Y  = data$PPM,
+  X1 = data$`Rumah Sendiri`,
+  X2 = data$`Fasilitas BAB`,
+  X3 = data$`Akses Minum`,
+  X4 = data$ASL,
+  X5 = data$PLN,
+  X6 = data$KP,
+  X7 = data$TPT
+)
+```
+
+```{r}
+View(regresi)
+```
+
+
+```{r}
+shp_gab <- prov %>%
+  left_join(regresi, by = c("FID" = "Kode"))
+```
+
+## Korelogram
+```{r}
+pairs.panels(regresi[, -1],
+             method = "pearson",
+             hist.col = "lightblue",
+             density = TRUE,
+             ellipses = TRUE,
+             lm = TRUE,
+             pch = 19,
+             col = "darkblue")
+```
+
+## **Boxplot peubah PPM**
+```{r}
+plot_ly(x = ~shp_gab$Y,
+        type = "box",
+        orientation = "h",
+        boxpoints = "outliers",
+        marker = list(color = "black"),
+        fillcolor = "gray",
+        line = list(color = "black")) %>%
+  layout(
+    xaxis = list(title = "Persentase Penduduk Miskin"),
+    yaxis = list(title = ""),
+    showlegend = FALSE
+  )
+```
+
+## **Peta Sebaran PPM di Indonesia**
+```{r}
+shp_sp <- as(shp_gab, "Spatial")
+colfunc <- colorRampPalette(c("green", "yellow", "red"))
+colors <- colfunc(16)
+
+spplot(shp_sp, "Y",
+       col.regions = colors,
+       main = "Persentase Penduduk Miskin Sumatera Utara")
+```
+
+# **REGRESI**
+## **PEMODELAN AWAL**
+```{r}
+ngetes <- lm(formula = Y~X1+X2+X3+X4+X5+X6+X7, data = regresi)
+summary(ngetes)
+```
+## **MULTIKOLINEARITAS**
+```{r}
+vif(ngetes)
+```
+## **PENANGANAN : HAPUS X4**
+```{r}
+p1 <- lm(formula = Y~X1+X2+X3+X5+X6+X7, data = shp_gab)
+summary(p1)
+```
+```{r}
+vif(p1)
+```
+Perhatikan disini, bahwa model awal (model penuh yang melibatkan semua peubah, mengalami multikolinearitas). Oleh sebab itu, dilakukan penanganan dengan menghapus peubah X4 (ASL) dari model. Setelah peubah X4 dihapus, maka model regresi yang baru (p1) sudah tidak mengalami multikolinearitas lagi.
+
+
+## **AMATAN TAK BIASA**
+```{r}
+ri_stud <- rstudent(p1)
+ri_stan <- rstandard(p1)
+hii_fungsi <- hatvalues(p1)
+X <- model.matrix(p1)
+X_inv_xt <- X %*% ginv(t(X) %*% X) %*% t(X)
+hii_manual <- diag(X_inv_xt)
+anova_model <- anova(p1)
+s <- sqrt(anova_model["Residuals", "Mean Sq"])
+ei <- p1$residuals
+ri_manual <- ei/(s*sqrt(1-hii_manual))
+
+nilai <- data.frame(ri_stud, ri_stan, ri_manual, hii_fungsi, hii_manual)
+nilai
+```
+
+
+### Pencilan
+```{r}
+for (i in 1:dim(nilai)[1]){
+  absri <- abs(nilai[,2])
+  pencilan <- which(absri > 2)
+}
+pencilan
+```
+
+### Leverage
+```{r}
+n <- dim(regresi)[1]
+p <- length(p1$coefficients)
+
+for (i in 1:dim(nilai)[1]){
+  cutoff <- 2*p/n
+  titik_leverage <- which(hii_fungsi > cutoff)
+}
+
+titik_leverage
+```
+
+```{r}
+ols_plot_resid_lev(p1)
+```
+
+### Amatan Berpengaruh
+```{r}
+DFFITSi <- dffits(p1)
+
+amatan_berpengaruh <- vector("list", dim(nilai)[1])
+for (i in 1:dim(nilai)[1]) {
+  cutoff <- 2 * sqrt((p / n))
+  amatan_berpengaruh[[i]] <- which(abs(DFFITSi) > cutoff)
+}
+berpengaruh <- unlist(amatan_berpengaruh)
+amatan_berpengaruh <- sort(unique(berpengaruh))
+amatan_berpengaruh
+```
+
+## **UJI ASUMSI AWAL**
+### **Plot**
+```{r}
+par(mfrow=c(2,2))
+hist(
+  p1$residuals,
+  main = "Histogram of Residuals",
+  xlab = "Residuals",
+  col = "lightblue",
+  border = "white"
+)
+plot(p1,2)
+plot(p1,1)
+plot(x = 1:dim(regresi)[1],
+     y = p1$residuals,
+     type = 'b', 
+     ylab = "Residuals",
+     xlab = "Observation")
+```
+
+### **Uji Hipotesis**
+```{r}
+t.test(p1$residuals,mu = 0,conf.level = 0.95)
+shapiro.test(p1$residuals)
+data_stand <- scale(regresi$Y)
+ks.test(data_stand, "pnorm")
+bptest(p1)
+dwtest(p1)
+```
+
+Berdasarkan uji yang telah dilakukan, baik formal maupun non-formal, semua asumsi regresi sudah terpenuhi, kecuali asumsi autkorelasi. Oleh sebab itu, perlu dilakukan penanganan terhadap autokorelasi.
+
+
+## **SELEKSI PEUBAH**
+```{r}
+bs <- ols_step_best_subset(p1)
+bs
+```
+Berdasarkan seleksi peubah regresi, dipilih model dengan 2 peubah independen yakni X1 (Rumah Sendiri) dan X5 (PLN) karena memiliki nilai Cp mellow, AIC, dan BIC terkecil dibandingkan model lainnya.
+
+```{r}
+p2 <- lm(formula = Y~X1+X5, data = shp_gab)
+summary(p2)
+```
+
+### **Plot**
+```{r}
+par(mfrow=c(2,2))
+hist(
+  p2$residuals,
+  main = "Histogram of Residuals",
+  xlab = "Residuals",
+  col = "lightblue",
+  border = "white"
+)
+plot(p2,2)
+plot(p2,1)
+plot(x = 1:dim(regresi)[1],
+     y = p2$residuals,
+     type = 'b', 
+     ylab = "Residuals",
+     xlab = "Observation")
+```
+
+### **Uji Hipotesis**
+```{r}
+t.test(p2$residuals,mu = 0,conf.level = 0.95)
+shapiro.test(p2$residuals)
+data_stand <- scale(regresi$Y)
+ks.test(data_stand, "pnorm")
+bptest(p2)
+dwtest(p2)
+```
+
+Ternyata, setelah dilakukan seleksi peubah, asumsi autokorelasi masih tidak terpenuhi.
+
+
+# **AUTOKORELASI SPASIAL : GLOBAL**
+## **SET KOORDINAT TITIK**
+```{r}
+shp_gab <- st_make_valid(shp_gab)
+coords <- st_coordinates(st_centroid(st_geometry(shp_gab)))
+head(coords)
+```
+
+## **HITUNG JARAK DAN KETETANGGAAN**
+### K-Nearest Neighbor
+```{r}
+knn3 <- knearneigh(coords, k = 3)
+nb_knn3 <- knn2nb(knn3)
+w.knn3 <- nb2listw(nb_knn3, style = "W")
+summary(w.knn3)
+```
+
+### Radial Distance Weight
+```{r}
+nb_dist <- dnearneigh(coords, 0, 150)
+w.dist <- nb2listw(nb_dist, style = "W")
+summary(w.dist)
+```
+
+### Invers Distance Weight
+```{r}
+dist_mat <- as.matrix(dist(coords, method = "euclid"))
+dist_mat[dist_mat == 0] <- NA
+w.idw <- 1 / (dist_mat)
+diag(w.idw)<-0
+rtot<-rowSums(w.idw, na.rm =T)
+w.idw.sd<-w.idw/rtot
+rowSums(w.idw.sd, na.rm=T)
+w.idw.s <- mat2listw(w.idw.sd,style='W')
+summary(w.idw.s)
+```
+
+### Exponential Distance Weight
+```{r}
+dist_mat <- as.matrix(dist(coords))
+dist_mat[dist_mat == 0] <- NA  
+b <- mean(dist_mat, na.rm = TRUE)
+W_exp <- exp(-dist_mat / b)
+W_exp[is.na(W_exp)] <- 0
+W_exp <- W_exp / rowSums(W_exp)
+lw_exp <- mat2listw(W_exp,style ='W')
+```
+
+```{r}
+View(shp_gab)
+```
+
+
+### Plot Tandingan
+```{r}
+bb <- st_bbox(shp_gab)
+
+par(mfrow = c(2, 2), mar = c(2, 2, 3, 1))
+
+#K-Nearest Neighbor
+plot(st_geometry(shp_gab),
+     border = "black", col = "grey90",
+     xlim = c(bb$xmin, bb$xmax),
+     ylim = c(bb$ymin, bb$ymax),
+     main = "K-Nearest Neighbor")
+plot(nb_knn3, coords, add = TRUE, col = "red", lwd = 1.5)
+text(coords[,1], coords[,2], labels = shp_gab$PROVINSI,
+     pos = 3, cex = 0.45)
+
+#Radial Distance Weight
+plot(st_geometry(shp_gab),
+     border = "black", col = "grey90",
+     xlim = c(bb$xmin, bb$xmax),
+     ylim = c(bb$ymin, bb$ymax),
+     main = "Radial Distance Weight (radius = 200 km)")
+plot(nb_dist, coords, add = TRUE, col = "red", lwd = 1.5)
+text(coords[,1], coords[,2], labels = shp_gab$PROVINSI,
+     pos = 3, cex = 0.45)
+
+#Inverse Distance Weight
+plot(st_geometry(shp_gab),
+     border = "black", col = "grey90",
+     xlim = c(bb$xmin, bb$xmax),
+     ylim = c(bb$ymin, bb$ymax),
+     main = "Inverse Distance Weight (α = 1)")
+text(coords[,1], coords[,2], labels = shp_gab$PROVINSI,
+     pos = 3, cex = 0.45)
+
+threshold <- quantile(w.idw.sd[w.idw.sd > 0], 0.90)
+pairs <- which(w.idw.sd > threshold, arr.ind = TRUE)
+segments(coords[pairs[,1],1], coords[pairs[,1],2],
+         coords[pairs[,2],1], coords[pairs[,2],2],
+         col = "red", lwd = 1.5)
+
+#Exponential Distance Weight
+plot(st_geometry(shp_gab),
+     border = "black", col = "grey90",
+     xlim = c(bb$xmin, bb$xmax),
+     ylim = c(bb$ymin, bb$ymax),
+     main = "Exponential Distance Weight")
+text(coords[,1], coords[,2], labels = shp_gab$PROVINSI,
+     pos = 3, cex = 0.45)
+
+threshold <- quantile(W_exp[W_exp > 0], 0.90)
+pairs <- which(W_exp > threshold, arr.ind = TRUE)
+segments(coords[pairs[,1],1], coords[pairs[,1],2],
+         coords[pairs[,2],1], coords[pairs[,2],2],
+         col = "red", lwd = 1.8)
+
+par(mfrow = c(1,1))
+```
+
+
+## **KETETANGGAAN DAN AUTOKORELASI GLOBAL**
+### K-Nearest neightbor
+```{r}
+moran_result <- moran.test(shp_gab$Y, w.knn3)
+moran_result
+```
+### Radial Distance Weight
+```{r}
+moran_result1 <- moran.test(shp_gab$Y, w.dist)
+moran_result1
+```
+### Invers Weight Distance
+```{r}
+moran_result2 <- moran.test(shp_gab$Y, w.idw.s)
+moran_result2
+```
+### Exponential Distance Weight
+```{r}
+moran_result3 <- moran.test(shp_gab$Y, lw_exp)
+moran_result3
+```
+
+### Plot Tandingan
+```{r}
+par(mfrow = c(2, 2))
+moran.plot(shp_gab$Y,w.knn3, main = "KNN",pch = 19, col = "darkblue")
+moran.plot(shp_gab$Y,w.dist, main = "RDW",pch = 19, col = "darkblue")
+moran.plot(shp_gab$Y,w.idw.s, main = "IDW",pch = 19, col = "darkblue")
+moran.plot(shp_gab$Y,lw_exp, main = "EDW",pch = 19, col = "darkblue")
+```
+
+
+# **AUTOKORELASI SPASIAL : LOCAL**
+## **SET KNN**
+```{r}
+LM_KNN <- localmoran(shp_gab$Y, w.knn3, alternative = "greater")
+shp_gab$lmI_KNN <- LM_KNN[, "Ii"]
+shp_gab$lmZ_KNN <- LM_KNN[, "Z.Ii"]
+shp_gab$lmp_KNN <- LM_KNN[, "Pr(z > E(Ii))"]
+```
+
+## **SET RDW**
+```{r}
+LM_RDW <- localmoran(shp_gab$Y, w.dist, alternative = "greater")
+LM_RDW <- LM_RDW[match(row.names(shp_gab), row.names(LM_RDW)), ]
+shp_gab$lmI_RDW <- LM_RDW[, "Ii"] # local Moran's I
+shp_gab$lmZ_RDW <- LM_RDW[, "Z.Ii"] # z-scores
+shp_gab$lmp_RDW <- LM_RDW[, "Pr(z > E(Ii))"]
+```
+
+## **SET IDW**
+```{r}
+LM_IDW <- localmoran(shp_gab$Y, w.idw.s, alternative = "greater")
+shp_gab$lmI_IDW <- LM_IDW[, "Ii"] # local Moran's I
+shp_gab$lmZ_IDW <- LM_IDW[, "Z.Ii"] # z-scores
+shp_gab$lmp_IDW <- LM_IDW[, "Pr(z > E(Ii))"]
+```
+
+```{r}
+LM_IDW <- as.data.frame(localmoran(shp_gab$Y, w.idw.s))
+```
+
+```{r}
+
+```
+
+
+
+## **SET EDW**
+```{r}
+LM_EDW <- localmoran(shp_gab$Y, lw_exp, alternative = "greater")
+shp_gab$lmI_EDW <- LM_EDW[, "Ii"] # local Moran's I
+shp_gab$lmZ_EDW <- LM_EDW[, "Z.Ii"] # z-scores
+shp_gab$lmp_EDW <- LM_EDW[, "Pr(z > E(Ii))"]
+```
+
+```{r}
+LM_EDW <- as.data.frame(localmoran(shp_gab$Y, lw_exp))
+lagY <- lag.listw(lw_exp, shp_gab$Y)
+Y <- shp_gab$Y
+shp_gab$LISA_cluster <- ifelse(Y > mean(Y) & lagY > mean(lagY), "High-High",
+                        ifelse(Y < mean(Y) & lagY < mean(lagY), "Low-Low",
+                        ifelse(Y > mean(Y) & lagY < mean(lagY), "High-Low",
+                        ifelse(Y < mean(Y) & lagY > mean(lagY), "Low-High", "Not Significant"))))
+```
+
+```{r}
+View(shp_gab)
+```
+
+
+
+
+## Visualisasi p-value lokal moran
+```{r}
+p2_KNN <- tm_shape(shp_gab) +
+  tm_polygons(col = "lmp_KNN", title = "p-value",
+              breaks = c(-Inf, 0.05, Inf)) +
+  tm_layout(legend.outside = TRUE)
+
+p2_RDW <- tm_shape(shp_gab) +
+  tm_polygons(col = "lmp_RDW", title = "p-value",
+              breaks = c(-Inf, 0.05, Inf)) +
+  tm_layout(legend.outside = TRUE)
+
+p2_IDW <- tm_shape(shp_gab) +
+  tm_polygons(col = "lmp_IDW", title = "p-value",
+              breaks = c(-Inf, 0.05, Inf)) +
+  tm_layout(legend.outside = TRUE)
+
+p2_EDW <- tm_shape(shp_gab) +
+  tm_polygons(col = "lmp_EDW", title = "p-value",
+              breaks = c(-Inf, 0.05, Inf)) +
+  tm_layout(legend.outside = TRUE)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+p2_KNN
+p2_RDW
+p2_IDW
+p2_EDW
+```
+
+## Visualisai Hotspot dan Coldspot
+```{r}
+library(tmap)
+
+# Set tmap ke mode plot
+tmap_mode("plot")
+
+tm_shape(shp_gab) +
+  tm_polygons(
+    col = "LISA_cluster",
+    palette = c("High-High" = "red",
+                "Low-Low"  = "blue",
+                "High-Low" = NA,
+                "Low-High" = NA,
+                "Not Significant" = NA),
+    title = "LISA Cluster",
+    colorNA = NA,      # wilayah NA tidak diwarnai
+    border.col = "grey40"
+  ) +
+  tm_layout(
+    legend.outside = TRUE
+  )
+
+```
+
+```{r}
+tmap_mode("plot")
+tm_shape(shp_gab) + tm_polygons(col = "lmZ_EDW",
+title = "Local Moran's I", style = "fixed",
+breaks = c(-Inf, -1.96, 1.96, Inf),
+labels = c("Negative SAC", "No SAC", "Positive SAC"),
+palette =  c("blue", "white", "red")) +
+tm_layout(legend.outside = TRUE)
+```
+
+# **DIAGNOSIS DEPENDENSI DAN HETEROSKEDASTISITAS SPASIAL**
+## **UJI DEPENDENSI SPASIAL**
+### Residual
+```{r}
+ww = lw_exp
+lm.morantest(p2, listw=ww, alternative="two.sided", zero.policy = TRUE)
+err.ols <- residuals(p2)
+merr <- moran.test(err.ols, ww,randomisation=T, 
+           alternative="two.sided")
+merr
+```
+### Peubah Y
+```{r}
+my <- moran.test(shp_gab$Y, ww,randomisation=T, 
+           alternative="two.sided")
+my
+```
+```{r}
+moran.plot(shp_gab$Y, ww, labels=shp_gab$PROVINSI)
+```
+
+### Semua Peubah X
+```{r}
+mx1 <- moran.test(shp_gab$X1, ww,randomisation=T, 
+           alternative="two.sided")
+mx1
+
+mx5 <- moran.test(shp_gab$X5, ww,randomisation=T, 
+           alternative="two.sided")
+mx5
+```
+
+### Hasil Uji
+```{r}
+Peubah = c("Y", "X1", "X5", "Sisaan")
+Indeks_Moran = c(my$estimate[1], mx1$estimate[1], mx5$estimate[1], merr$estimate[1])
+p_value = c(my$p.value, mx1$p.value, mx5$p.value, merr$p.value)
+
+df1 = cbind.data.frame(Peubah, Indeks_Moran, p_value)
+colnames(df1) <- c("Peubah", "Indeks Moran", "p-value")
+df1
+```
+
+### UJI LM
+```{r}
+model <- lm.RStests(p2,listw=ww,zero.policy = TRUE, test=c("LMerr","RLMerr","LMlag","RLMlag","SARMA"))
+summary(model)
+```
+
+# **REGRESI SAR**
+```{r}
+sar <- lagsarlm(Y ~ X1 + X5, data = shp_gab, listw = ww)
+summary(sar, Nagelkerke = T)
+```
+## **UJI ASUMSI SAR**
+```{r}
+err.sar<-residuals(sar)
+ad.test(err.sar)
+
+bptest.Sarlm(sar)
+
+moran.test(err.sar, ww, alternative="two.sided")
+```
+
+```{r}
+dwtest(sar)
+```
+
+
+
+
+
+
+
+
